@@ -1,0 +1,43 @@
+# Android
+.gradle/
+build/
+*.apk
+*.aab
+local.properties
+key.properties
+*.jks
+*.keystore
+.cxx/
+captures/
+.externalNativeBuild/
+*.iml
+.idea/
+*.DS_Store
+
+# Flutter / Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+pubspec.lock
+
+# Generated
+/aria-app/android/app/src/main/java/io/flutter/
+
+# Gradle wrapper (keep the jar)
+!gradle/wrapper/gradle-wrapper.jar
+
+# IntelliJ / Android Studio
+*.iws
+*.ipr
+out/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment / secrets
+.env
+*.env.local
+secrets.properties
