@@ -120,14 +120,21 @@ No app-switching. No copy-pasting. Just results.
 ## Getting Started (Phase 1)
 
 ```bash
-git clone https://github.com/[org]/aria-os
-cd aria-os/agent
-pip install -r requirements.txt
+git clone https://github.com/omarzorob/aria-os
+cd aria-os
+
+# Install uv (fast Python package manager)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install all dependencies
+uv sync
+
 # Configure your API key
-cp config.example.json config.json
+export ANTHROPIC_API_KEY=your_key_here
+
 # Run on connected Android device
-adb install aria-accessibility.apk
-python aria_agent.py
+adb install system/accessibility/aria-accessibility.apk
+uv run python agent/aria_agent.py
 ```
 
 ---

@@ -7,9 +7,15 @@ Thanks for your interest. Aria is built in public — PRs, issues, and ideas all
 ```bash
 git clone https://github.com/omarzorob/aria-os
 cd aria-os
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r agent/requirements.txt
+
+# Install uv if you don't have it
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install dependencies and create venv automatically
+uv sync
+
+# Run anything
+uv run python agent/aria_agent.py
 ```
 
 ## How to Contribute
