@@ -1,5 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <string name="app_name">Aria Accessibility Service</string>
-    <string name="accessibility_service_description">Aria OS Accessibility Service — enables AI agent control of the device UI via JSON-RPC on port 7765.</string>
-</resources>
