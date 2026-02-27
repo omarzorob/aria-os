@@ -1,0 +1,61 @@
+name: aria_ui
+description: Aria OS - AI-native Android OS chat interface.
+version: 1.0.0+1
+publish_to: none
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # HTTP client for Aria agent communication
+  http: ^1.2.0
+
+  # Audio recording for voice mode
+  record: ^5.1.0
+
+  # Text-to-speech for Aria responses
+  flutter_tts: ^4.0.2
+
+  # Shared preferences for settings persistence
+  shared_preferences: ^2.2.2
+
+  # Lottie animations (for waveform/loading)
+  lottie: ^3.1.0
+
+  # Markdown rendering for rich agent responses
+  flutter_markdown: ^0.7.3
+
+  # URL launcher for opening links
+  url_launcher: ^6.2.5
+
+  # Permission handling (microphone, etc.)
+  permission_handler: ^11.3.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+
+  # App icon (place in assets/icons/)
+  # Run: flutter pub run flutter_launcher_icons
+  assets:
+    - assets/icons/
+    - assets/images/
+
+  # Google Fonts via local or CDN
+  # fonts:
+  #   - family: Inter
+  #     fonts:
+  #       - asset: assets/fonts/Inter-Regular.ttf
+  #       - asset: assets/fonts/Inter-Medium.ttf
+  #         weight: 500
+  #       - asset: assets/fonts/Inter-SemiBold.ttf
+  #         weight: 600
+  #       - asset: assets/fonts/Inter-Bold.ttf
+  #         weight: 700
