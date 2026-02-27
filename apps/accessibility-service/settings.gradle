@@ -1,0 +1,2 @@
+rootProject.name = "AriaAccessibilityService"
+include ':app'

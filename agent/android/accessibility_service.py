@@ -1,15 +1,24 @@
 """
-P1-10: Accessibility Service Bridge
+Aria Accessibility Service Bridge
 
-Defines the AccessibilityService integration spec and provides a Python bridge
-that communicates with an Android Accessibility Service APK via ADB socket.
+Python client that communicates with the Aria Accessibility Service APK running on an
+Android device. The APK implements a JSON-RPC socket server on port 7765.
 
-The companion APK (aria-accessibility-service) runs on the Android device and
-exposes a local TCP socket that this bridge connects to via ADB port forwarding.
+Protocol: Line-delimited JSON-RPC over TCP
+APK package: ai.aria.accessibility
+Socket port: 7765 (on-device, forwarded via ADB)
 
-Protocol: JSON-RPC over TCP.
-APK package: com.aria.accessibilityservice
-Socket port: 9876 (on-device)
+ADB port forwarding setup:
+    adb forward tcp:7765 tcp:7765
+
+Build the APK:
+    cd apps/accessibility-service && ./gradlew assembleDebug
+
+Install the APK:
+    adb install apps/accessibility-service/app/build/outputs/apk/debug/app-debug.apk
+
+Enable the service:
+    Android Settings → Accessibility → Aria Accessibility Service → Enable
 """
 
 from __future__ import annotations
@@ -24,52 +33,51 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-# ADB port-forward: adb forward tcp:9876 tcp:9876
-BRIDGE_PORT = 9876
+# Port must match SocketServer.PORT in Kotlin
+BRIDGE_PORT = 7765
 BRIDGE_HOST = "127.0.0.1"
 CONNECT_TIMEOUT = 5.0
 READ_TIMEOUT = 10.0
-APK_PACKAGE = "com.aria.accessibilityservice"
+APK_PACKAGE = "ai.aria.accessibility"
 
 
 @dataclass
 class UIElement:
     """Represents a UI element from the Android accessibility tree."""
 
-    element_id: str
+    id: str
     text: str
     content_description: str
     class_name: str
-    resource_id: str
-    bounds: dict[str, int]  # left, top, right, bottom
-    clickable: bool
-    focusable: bool
-    scrollable: bool
-    enabled: bool
-    children: list["UIElement"] = field(default_factory=list)
+    bounds: dict[str, int]          # left, top, right, bottom
+    is_clickable: bool
+    is_editable: bool
+    is_scrollable: bool
+    is_enabled: bool
+    child_count: int
+    node_hash_code: int             # used as temp id for tapping
 
     @classmethod
     def from_dict(cls, data: dict) -> "UIElement":
-        children = [cls.from_dict(c) for c in data.get("children", [])]
         return cls(
-            element_id=data.get("id", ""),
+            id=data.get("id", ""),
             text=data.get("text", ""),
             content_description=data.get("contentDescription", ""),
             class_name=data.get("className", ""),
-            resource_id=data.get("resourceId", ""),
             bounds=data.get("bounds", {"left": 0, "top": 0, "right": 0, "bottom": 0}),
-            clickable=data.get("clickable", False),
-            focusable=data.get("focusable", False),
-            scrollable=data.get("scrollable", False),
-            enabled=data.get("enabled", True),
-            children=children,
+            is_clickable=data.get("isClickable", False),
+            is_editable=data.get("isEditable", False),
+            is_scrollable=data.get("isScrollable", False),
+            is_enabled=data.get("isEnabled", True),
+            child_count=data.get("childCount", 0),
+            node_hash_code=data.get("nodeHashCode", 0),
         )
 
     def center(self) -> tuple[int, int]:
         """Return the center coordinates of this element."""
         b = self.bounds
-        x = (b["left"] + b["right"]) // 2
-        y = (b["top"] + b["bottom"]) // 2
+        x = (b.get("left", 0) + b.get("right", 0)) // 2
+        y = (b.get("top", 0) + b.get("bottom", 0)) // 2
         return x, y
 
 
@@ -77,11 +85,23 @@ class AccessibilityServiceBridge:
     """
     Python bridge to the Aria Accessibility Service running on an Android device.
 
+    The Aria Accessibility Service APK must be installed and enabled on the device.
+    ADB port forwarding must be active: `adb forward tcp:7765 tcp:7765`
+
     Usage:
         bridge = AccessibilityServiceBridge()
         bridge.connect()
+        # check it's alive
+        print(bridge.ping())
+        # get all on-screen elements
         elements = bridge.get_screen_elements()
-        bridge.tap_element(elements[0])
+        # tap an element
+        bridge.tap_element(elements[0].node_hash_code)
+        bridge.disconnect()
+
+    Or as a context manager:
+        with AccessibilityServiceBridge() as bridge:
+            bridge.tap_coords(540, 960)
     """
 
     def __init__(
@@ -94,8 +114,8 @@ class AccessibilityServiceBridge:
         self.port = port
         self.adb_path = adb_path
         self._sock: Optional[socket.socket] = None
+        self._file = None           # buffered file reader over the socket
         self._connected = False
-        self._request_id = 0
 
     # ------------------------------------------------------------------
     # Connection management
@@ -103,10 +123,10 @@ class AccessibilityServiceBridge:
 
     def connect(self, setup_forward: bool = True) -> bool:
         """
-        Connect to the Accessibility Service bridge.
+        Connect to the Aria Accessibility Service on the device.
 
         Args:
-            setup_forward: If True, runs `adb forward` before connecting.
+            setup_forward: If True, runs `adb forward tcp:7765 tcp:7765` first.
 
         Returns:
             True if connected successfully.
@@ -119,16 +139,24 @@ class AccessibilityServiceBridge:
             self._sock.settimeout(CONNECT_TIMEOUT)
             self._sock.connect((self.host, self.port))
             self._sock.settimeout(READ_TIMEOUT)
+            # Wrap in a file for easy line-by-line reading
+            self._file = self._sock.makefile("r", encoding="utf-8")
             self._connected = True
-            logger.info("Connected to Accessibility Service on %s:%d", self.host, self.port)
+            logger.info("Connected to Aria Accessibility Service on %s:%d", self.host, self.port)
             return True
         except (socket.error, ConnectionRefusedError) as e:
-            logger.error("Failed to connect to Accessibility Service: %s", e)
+            logger.error("Failed to connect: %s", e)
             self._connected = False
             return False
 
     def disconnect(self) -> None:
-        """Disconnect from the bridge."""
+        """Disconnect from the Accessibility Service."""
+        if self._file:
+            try:
+                self._file.close()
+            except Exception:
+                pass
+            self._file = None
         if self._sock:
             try:
                 self._sock.close()
@@ -136,73 +164,68 @@ class AccessibilityServiceBridge:
                 pass
             self._sock = None
         self._connected = False
-        logger.info("Disconnected from Accessibility Service")
+        logger.info("Disconnected from Aria Accessibility Service")
 
     def is_connected(self) -> bool:
-        """Return True if the bridge is currently connected."""
+        """Return True if currently connected."""
         return self._connected
 
     def _setup_adb_forward(self) -> None:
-        """Set up ADB port forwarding for the bridge socket."""
+        """Set up ADB port forwarding tcp:7765 → tcp:7765."""
         cmd = [self.adb_path, "forward", f"tcp:{self.port}", f"tcp:{self.port}"]
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
             if result.returncode != 0:
                 logger.warning("ADB forward warning: %s", result.stderr.strip())
             else:
-                logger.debug("ADB forward set up: %s", result.stdout.strip())
+                logger.debug("ADB forward active: port %d", self.port)
         except subprocess.TimeoutExpired:
             logger.error("ADB forward timed out")
         except FileNotFoundError:
-            logger.error("ADB not found at: %s", self.adb_path)
+            logger.error("adb not found: %s", self.adb_path)
 
     # ------------------------------------------------------------------
-    # RPC communication
+    # Core JSON-RPC transport
     # ------------------------------------------------------------------
 
-    def _send_request(self, method: str, params: dict | None = None) -> dict:
+    def _send_command(self, method: str, params: dict | None = None) -> Any:
         """
-        Send a JSON-RPC request to the bridge and return the response.
+        Send a JSON-RPC command to the Kotlin SocketServer and return the result.
+
+        Request format:  {"method": "...", "params": {...}}
+        Response format: {"success": true, "result": ...}
+                         {"success": false, "error": "..."}
 
         Args:
-            method: RPC method name.
-            params: Optional parameters dict.
+            method: The command method name (e.g., "ping", "get_screen_elements").
+            params: Optional dict of parameters.
 
         Returns:
-            Response dict from the bridge.
+            The "result" value from the response.
 
         Raises:
-            ConnectionError: If not connected or send fails.
-            TimeoutError: If response times out.
-            ValueError: If response is malformed.
+            ConnectionError: If not connected.
+            RuntimeError: If the service returns success=false.
+            TimeoutError: If the request times out.
         """
-        if not self._connected or not self._sock:
-            raise ConnectionError("Not connected to Accessibility Service")
+        if not self._connected or not self._sock or not self._file:
+            raise ConnectionError("Not connected to Accessibility Service. Call connect() first.")
 
-        self._request_id += 1
-        request = {
-            "jsonrpc": "2.0",
-            "id": self._request_id,
-            "method": method,
-            "params": params or {},
-        }
+        request = {"method": method, "params": params or {}}
+        payload = json.dumps(request) + "\n"
 
         try:
-            payload = json.dumps(request) + "\n"
             self._sock.sendall(payload.encode("utf-8"))
+            response_line = self._file.readline()
+            if not response_line:
+                raise ConnectionError("Connection closed by service")
 
-            # Read response (newline-delimited JSON)
-            data = b""
-            while not data.endswith(b"\n"):
-                chunk = self._sock.recv(4096)
-                if not chunk:
-                    raise ConnectionError("Connection closed by bridge")
-                data += chunk
+            response = json.loads(response_line.strip())
 
-            response = json.loads(data.decode("utf-8").strip())
-            if "error" in response:
-                raise RuntimeError(f"Bridge error: {response['error']}")
-            return response.get("result", {})
+            if not response.get("success", False):
+                raise RuntimeError(f"Service error [{method}]: {response.get('error', 'unknown')}")
+
+            return response.get("result")
 
         except socket.timeout:
             raise TimeoutError(f"Request '{method}' timed out after {READ_TIMEOUT}s")
@@ -210,121 +233,203 @@ class AccessibilityServiceBridge:
             raise ValueError(f"Malformed JSON response: {e}")
 
     # ------------------------------------------------------------------
-    # Screen element access
+    # Service commands
     # ------------------------------------------------------------------
+
+    def ping(self) -> dict:
+        """Ping the service. Returns {"status": "ok", "service": "aria-accessibility"}."""
+        return self._send_command("ping")
 
     def get_screen_elements(self) -> list[UIElement]:
         """
         Get all UI elements currently visible on screen.
 
         Returns:
-            List of UIElement objects representing the accessibility tree.
+            List of UIElement objects.
         """
-        result = self._send_request("getScreenElements")
-        elements_data = result.get("elements", [])
-        return [UIElement.from_dict(e) for e in elements_data]
+        result = self._send_command("get_screen_elements")
+        if isinstance(result, list):
+            return [UIElement.from_dict(e) for e in result]
+        return []
 
-    def find_element_by_text(self, text: str, exact: bool = False) -> Optional[UIElement]:
+    def get_screen_text(self) -> str:
         """
-        Find a UI element by its visible text.
-
-        Args:
-            text: Text to search for.
-            exact: If True, match exactly; otherwise case-insensitive substring.
+        Get all visible text on screen as a single string.
 
         Returns:
-            First matching UIElement, or None.
+            Concatenated text content.
         """
-        result = self._send_request("findElementByText", {"text": text, "exact": exact})
-        element_data = result.get("element")
-        if element_data:
-            return UIElement.from_dict(element_data)
-        return None
+        result = self._send_command("get_screen_text")
+        if isinstance(result, dict):
+            return result.get("text", "")
+        return str(result) if result else ""
 
-    def find_element_by_id(self, resource_id: str) -> Optional[UIElement]:
+    def get_focused_app(self) -> str:
         """
-        Find a UI element by its Android resource ID.
-
-        Args:
-            resource_id: Resource ID string (e.g., "com.example:id/button").
+        Get the package name of the currently active application.
 
         Returns:
-            Matching UIElement, or None.
+            Package name, e.g. "com.google.android.apps.maps"
         """
-        result = self._send_request("findElementById", {"resourceId": resource_id})
-        element_data = result.get("element")
-        if element_data:
-            return UIElement.from_dict(element_data)
-        return None
+        result = self._send_command("get_focused_app")
+        if isinstance(result, dict):
+            return result.get("package", "")
+        return ""
 
-    # ------------------------------------------------------------------
-    # Interaction
-    # ------------------------------------------------------------------
-
-    def tap_element(self, element: UIElement) -> bool:
+    def find_element_by_text(self, text: str) -> list[UIElement]:
         """
-        Perform a tap/click action on the given element.
+        Find elements whose text or content description contains [text].
 
         Args:
-            element: The UIElement to tap.
+            text: Text to search for (case-insensitive, substring match).
 
         Returns:
-            True if the action was performed successfully.
+            List of matching UIElement objects.
         """
-        result = self._send_request(
-            "tapElement",
-            {"elementId": element.element_id, "bounds": element.bounds},
+        result = self._send_command("find_element_by_text", {"text": text})
+        if isinstance(result, list):
+            return [UIElement.from_dict(e) for e in result]
+        return []
+
+    def find_element_by_id(self, view_id: str) -> list[UIElement]:
+        """
+        Find elements whose viewIdResourceName matches [view_id].
+
+        Args:
+            view_id: Resource ID to search (exact or contains match).
+
+        Returns:
+            List of matching UIElement objects.
+        """
+        result = self._send_command("find_element_by_id", {"id": view_id})
+        if isinstance(result, list):
+            return [UIElement.from_dict(e) for e in result]
+        return []
+
+    def tap_element(self, node_hash_code: int) -> bool:
+        """
+        Click an element identified by its nodeHashCode.
+
+        Args:
+            node_hash_code: The nodeHashCode from UIElement (temporary ID valid for current screen state).
+
+        Returns:
+            True if the click action was performed.
+        """
+        result = self._send_command("tap_element", {"nodeId": node_hash_code})
+        if isinstance(result, dict):
+            return result.get("clicked", False)
+        return False
+
+    def tap_coords(self, x: float, y: float) -> bool:
+        """
+        Perform a tap gesture at screen coordinates (x, y).
+
+        Args:
+            x: Horizontal coordinate in pixels.
+            y: Vertical coordinate in pixels.
+
+        Returns:
+            True if gesture was dispatched.
+        """
+        result = self._send_command("tap_coords", {"x": x, "y": y})
+        if isinstance(result, dict):
+            return result.get("tapped", False)
+        return False
+
+    def swipe(
+        self,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+        duration_ms: int = 300,
+    ) -> bool:
+        """
+        Perform a swipe gesture from (x1, y1) to (x2, y2).
+
+        Args:
+            x1, y1: Start coordinates.
+            x2, y2: End coordinates.
+            duration_ms: Duration of the swipe in milliseconds.
+
+        Returns:
+            True if gesture was dispatched.
+        """
+        result = self._send_command(
+            "swipe",
+            {"x1": x1, "y1": y1, "x2": x2, "y2": y2, "duration": duration_ms},
         )
-        return result.get("success", False)
+        if isinstance(result, dict):
+            return result.get("swiped", False)
+        return False
 
     def type_text(self, text: str) -> bool:
         """
         Type text into the currently focused input field.
 
         Args:
-            text: Text to type.
+            text: Text string to type.
 
         Returns:
-            True if text was entered successfully.
+            True if text was set successfully.
         """
-        result = self._send_request("typeText", {"text": text})
-        return result.get("success", False)
+        result = self._send_command("type_text", {"text": text})
+        if isinstance(result, dict):
+            return result.get("typed", False)
+        return False
 
-    def scroll(
-        self,
-        direction: str,
-        element_id: Optional[str] = None,
-        amount: int = 1,
-    ) -> bool:
+    def press_back(self) -> None:
+        """Press the Back button."""
+        self._send_command("press_back")
+
+    def press_home(self) -> None:
+        """Press the Home button."""
+        self._send_command("press_home")
+
+    def press_recents(self) -> None:
+        """Press the Recents (overview) button."""
+        self._send_command("press_recents")
+
+    def press_notifications(self) -> None:
+        """Open the notification shade."""
+        self._send_command("press_notifications")
+
+    def scroll_forward(self, node_hash_code: Optional[int] = None) -> bool:
         """
-        Scroll in the specified direction.
+        Scroll forward (down) in a scrollable view.
 
         Args:
-            direction: "up", "down", "left", or "right".
-            element_id: Optional element ID to scroll within.
-            amount: Number of scroll steps.
+            node_hash_code: Hash of the scrollable node to scroll in, or None for root.
 
         Returns:
             True if scroll was performed.
         """
-        if direction not in ("up", "down", "left", "right"):
-            raise ValueError(f"Invalid scroll direction: {direction}")
+        params = {}
+        if node_hash_code is not None:
+            params["nodeId"] = node_hash_code
+        result = self._send_command("scroll_forward", params)
+        if isinstance(result, dict):
+            return result.get("scrolled", False)
+        return False
 
-        result = self._send_request(
-            "scroll",
-            {"direction": direction, "elementId": element_id, "amount": amount},
-        )
-        return result.get("success", False)
-
-    def get_focused_app(self) -> str:
+    def scroll_backward(self, node_hash_code: Optional[int] = None) -> bool:
         """
-        Get the package name of the currently focused application.
+        Scroll backward (up) in a scrollable view.
+
+        Args:
+            node_hash_code: Hash of the scrollable node to scroll in, or None for root.
 
         Returns:
-            Package name string (e.g., "com.google.android.dialer").
+            True if scroll was performed.
         """
-        result = self._send_request("getFocusedApp")
-        return result.get("packageName", "")
+        params = {}
+        if node_hash_code is not None:
+            params["nodeId"] = node_hash_code
+        result = self._send_command("scroll_backward", params)
+        if isinstance(result, dict):
+            return result.get("scrolled", False)
+        return False
 
     # ------------------------------------------------------------------
     # Context manager support
